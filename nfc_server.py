@@ -1,38 +1,16 @@
-"""
-NFC Tap-to-Pay WebSocket Server
-================================
-Reads balance from NFC chip, handles write-back after wins.
-
-Chip format (plain text NDEF):
-  "BALANCE:250"   →  player has $250
-
-pip3 install pyscard websockets
-python3 nfc_server.py
-"""
+"""Read player identity from NFC and store blackjack demo balances in MongoDB."""
 
 import asyncio
 import json
-import threading
-import time
-from datetime import datetime
+import os
+import re
 
 import websockets
+from pymongo import MongoClient, ReturnDocument
+from pymongo.errors import PyMongoError
 from smartcard.CardMonitoring import CardMonitor, CardObserver
-from smartcard.util import toHexString
 
 
-# ── State ────────────────────────────────────────────────────────────────────
-connected_clients: set = set()
-nfc_queue: asyncio.Queue = None
-event_loop = None
-
-# Modes the server can be in
-MODE_READ  = "read"   # waiting for tap to read balance
-MODE_WRITE = "write"  # waiting for tap to write new balance back
-pending_write_balance = None  # balance to write on next tap
-
-
-# ── NDEF helpers ─────────────────────────────────────────────────────────────
 def read_pages(connection):
     raw = bytearray()
     for page in range(4, 40):
@@ -50,6 +28,7 @@ def parse_ndef_text(raw):
         if raw[i] == 0x00: i += 1; continue
         if raw[i] == 0xFE: break
         tag = raw[i]; i += 1
+        if i >= len(raw): break
         length = raw[i]; i += 1
         if tag != 0x03: i += length; continue
         ndef = raw[i: i + length]
@@ -69,144 +48,151 @@ def parse_ndef_text(raw):
     return None
 
 
-def build_ndef_text_record(text: str) -> bytes:
-    """Build a minimal NDEF Text record for writing back to the chip."""
-    lang = b'en'
-    payload = bytes([len(lang)]) + lang + text.encode('utf-8')
-    # NDEF record: TNF=0x01 (Well-known), SR=1, type='T'
-    record = bytes([
-        0xD1,           # MB=1, ME=1, SR=1, TNF=Well-known
-        0x01,           # Type length = 1
-        len(payload),   # Payload length
-        0x54,           # Type = 'T' (Text)
-    ]) + payload
-    # Wrap in TLV: 0x03 <len> <ndef> 0xFE
-    tlv = bytes([0x03, len(record)]) + record + bytes([0xFE])
-    # Pad to page boundary (4 bytes)
-    while len(tlv) % 4 != 0:
-        tlv += b'\x00'
-    return tlv
-
-
-def write_pages(connection, data: bytes) -> bool:
-    """Write data to chip starting at page 4."""
-    for i in range(0, len(data), 4):
-        page = 4 + (i // 4)
-        chunk = list(data[i:i+4])
-        if len(chunk) < 4:
-            chunk += [0] * (4 - len(chunk))
-        cmd = [0xFF, 0xD6, 0x00, page, 0x04] + chunk
-        _, sw1, sw2 = connection.transmit(cmd)
-        if sw1 != 0x90:
-            return False
-    return True
-
-
-# ── NFC Observer ─────────────────────────────────────────────────────────────
-class NFCObserver(CardObserver):
-    def update(self, observable, actions):
-        global pending_write_balance, event_loop, nfc_queue
-
-        cards_tapped = actions[0]
-        if not cards_tapped:
-            return
-
-        card = cards_tapped[0]
-        try:
-            conn = card.createConnection()
-            conn.connect()
-
-            if pending_write_balance is not None:
-                # WRITE MODE — write new balance back to chip
-                balance = pending_write_balance
-                text = f"BALANCE:{balance}"
-                data = build_ndef_text_record(text)
-                success = write_pages(conn, data)
-                event = {
-                    "type": "write_result",
-                    "success": success,
-                    "balance": balance,
-                    "timestamp": datetime.now().isoformat()
-                }
-                pending_write_balance = None
-            else:
-                # READ MODE — read balance from chip
-                raw  = read_pages(conn)
-                text = parse_ndef_text(raw)
-                balance = None
-                if text and text.startswith("BALANCE:"):
-                    try:
-                        balance = int(text.split(":")[1].strip())
-                    except ValueError:
-                        balance = None
-                event = {
-                    "type": "card_read",
-                    "raw_text": text,
-                    "balance": balance,
-                    "timestamp": datetime.now().isoformat()
-                }
-
-            asyncio.run_coroutine_threadsafe(nfc_queue.put(event), event_loop)
-
-        except Exception as e:
-            event = {"type": "error", "message": str(e)}
-            asyncio.run_coroutine_threadsafe(nfc_queue.put(event), event_loop)
-
-
-# ── WebSocket handlers ────────────────────────────────────────────────────────
-async def handler(websocket):
-    connected_clients.add(websocket)
-    print(f"[+] Client connected ({len(connected_clients)} total)")
+def player_identity(raw):
     try:
-        async for message in websocket:
-            data = json.loads(message)
-            await handle_client_message(data)
-    except websockets.ConnectionClosed:
-        pass
-    finally:
-        connected_clients.discard(websocket)
-        print(f"[-] Client disconnected ({len(connected_clients)} total)")
+        identity = json.loads(parse_ndef_text(raw) or "null")
+    except ValueError:
+        identity = None
+    if isinstance(identity, dict):
+        player_id = identity.get("id")
+        name = identity.get("name")
+        if (isinstance(player_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", player_id)
+                and isinstance(name, str) and name.strip()):
+            return player_id, name.strip()
+    raise ValueError("Use a chip with a player ID and name. Legacy balance chips need reprogramming.")
 
 
-async def handle_client_message(data):
-    global pending_write_balance
-    if data.get("type") == "prepare_write":
-        pending_write_balance = data.get("balance")
-        print(f"[write] Pending write: BALANCE:{pending_write_balance}")
+class NFCObserver(CardObserver):
+    def __init__(self, loop, queue):
+        self.loop = loop
+        self.queue = queue
+
+    def update(self, observable, actions):
+        if not actions[0]:
+            return
+        connection = actions[0][0].createConnection()
+        try:
+            connection.connect()
+            player_id, name = player_identity(read_pages(connection))
+            event = {"type": "card_read", "player_id": player_id, "name": name}
+        except Exception as error:
+            event = {"type": "error", "message": str(error)}
+        finally:
+            try:
+                connection.disconnect()
+            except Exception:
+                pass
+        self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
 
 
-async def broadcast(event):
-    if not connected_clients:
-        return
-    msg = json.dumps(event)
-    await asyncio.gather(*[c.send(msg) for c in list(connected_clients)], return_exceptions=True)
+def adjust_balance(players, player_id, change, revision, operation):
+    query = {"_id": player_id, "revision": revision}
+    if change < 0:
+        query["balance"] = {"$gte": -change}
+    document = players.find_one_and_update(
+        query,
+        {"$inc": {"balance": change, "revision": 1}, "$set": {"last_operation": operation}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if document is not None:
+        return document, True
+    document = players.find_one({"_id": player_id})
+    return document, bool(document and document.get("last_operation") == operation)
 
 
-async def queue_loop():
-    while True:
-        event = await nfc_queue.get()
-        print(f"[nfc] {event}")
-        await broadcast(event)
-
-
-# ── Main ─────────────────────────────────────────────────────────────────────
 async def main():
-    global nfc_queue, event_loop
-    event_loop = asyncio.get_running_loop()
-    nfc_queue  = asyncio.Queue()
+    uri = os.environ.get("MONGODB_URI")
+    if not uri:
+        raise SystemExit("Set MONGODB_URI before starting the server.")
+    with MongoClient(uri, serverSelectionTimeoutMS=5000, timeoutMS=8000) as client:
+        try:
+            await asyncio.to_thread(client.admin.command, "ping")
+        except PyMongoError as error:
+            raise SystemExit(f"MongoDB connection failed ({type(error).__name__}). Check your URI and database access.")
+        await serve_table(client[os.environ.get("MONGODB_DATABASE", "hack_uta")].players)
+
+
+async def serve_table(players):
+    loop = asyncio.get_running_loop()
+    taps = asyncio.Queue()
+    # Each browser can update only the player it explicitly selected after a tap.
+    clients = {}
+    last_tapped = None
+
+    async def handler(websocket):
+        clients[websocket] = None
+        try:
+            async for message in websocket:
+                operation = None
+                try:
+                    data = json.loads(message)
+                    if not isinstance(data, dict):
+                        raise ValueError("Invalid request.")
+                    operation = data.get("operation")
+                    player_id = data.get("player_id")
+                    if data.get("type") == "select_player":
+                        if player_id != last_tapped or not isinstance(player_id, str):
+                            raise ValueError("Tap your chip again to select your player.")
+                        clients[websocket] = player_id
+                        result = {"success": True}
+                    elif data.get("type") == "adjust_balance":
+                        if not isinstance(player_id, str) or clients[websocket] != player_id:
+                            raise ValueError("Tap your chip again before changing the balance.")
+                        change, revision = data.get("change"), data.get("revision")
+                        if (type(change) is not int or not 0 < abs(change) <= 100000
+                                or type(revision) is not int or revision < 0
+                                or not isinstance(operation, str) or len(operation) > 100):
+                            raise ValueError("Invalid balance update.")
+                        document, applied = await asyncio.to_thread(
+                            adjust_balance, players, player_id, change, revision, operation
+                        )
+                        result = {"success": applied}
+                        if document:
+                            result.update(balance=document["balance"], revision=document["revision"])
+                        if not applied:
+                            result["message"] = "Balance changed or funds are insufficient. Check the displayed balance."
+                    else:
+                        raise ValueError("Unknown request.")
+                except (ValueError, TypeError) as error:
+                    result = {"success": False, "message": str(error)}
+                except PyMongoError:
+                    result = {"success": False, "retry": True, "message": "MongoDB unavailable. Retrying…"}
+                await websocket.send(json.dumps({"type": "response", "operation": operation, **result}))
+        except websockets.ConnectionClosed:
+            pass
+        finally:
+            clients.pop(websocket, None)
 
     monitor = CardMonitor()
-    monitor.addObserver(NFCObserver())
-    print("NFC reader ready (pyscard)")
-
-    async with websockets.serve(handler, "localhost", 8765):
-        print("WebSocket server on ws://localhost:8765")
-        print("Open index.html in your browser\n")
-        await queue_loop()
+    observer = NFCObserver(loop, taps)
+    monitor.addObserver(observer)
+    try:
+        async with websockets.serve(handler, "localhost", 8765):
+            print("MongoDB and NFC WebSocket server ready on ws://localhost:8765")
+            while True:
+                event = await taps.get()
+                last_tapped = None
+                if event["type"] == "card_read":
+                    try:
+                        document = await asyncio.to_thread(players.find_one, {"_id": event["player_id"]})
+                        if document is None:
+                            event = {"type": "error", "message": "Player ID is missing from MongoDB."}
+                        else:
+                            balance, revision = document.get("balance"), document.get("revision")
+                            if type(balance) is not int or type(revision) is not int:
+                                event = {"type": "error", "message": "Player needs integer balance and revision in MongoDB."}
+                            else:
+                                last_tapped = event["player_id"]
+                                event.update(balance=balance, revision=revision)
+                    except PyMongoError:
+                        event = {"type": "error", "message": "MongoDB unavailable. Try tapping again."}
+                websockets.broadcast(list(clients), json.dumps(event))
+    finally:
+        monitor.deleteObserver(observer)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nStopped.")
+        pass

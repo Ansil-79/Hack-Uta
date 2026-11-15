@@ -1,53 +1,41 @@
-# Overview
+# NFC Blackjack
 
-An NFC-integrated blackjack platform that allows players to load funds from NFC cards, play blackjack through a browser interface, and cash out updated balances back to the card.
+The chip stores an ID and display name as an NDEF **Text** record. MongoDB stores the player's demo balance. A tap loads that balance into the browser. Deal, Double, and Split debit MongoDB, and round settlement credits the payout. Ending the session returns the browser to the tap screen.
 
-The system uses a Python backend to communicate with an NFC reader and manage card data, while a JavaScript frontend provides the game interface. Browser and server communication is handled through WebSockets, enabling real-time balance updates and card interactions.
-
-## Technologies
-
-* Python 3.14.3
-* Pyscard
-* JavaScript
-* HTML/CSS
-* WebSockets
-* NFC reader (ACR122U -A9)
-* NFC chips (NTAG215)
-
-## Features
-
-* NFC card authentication and balance management
-* Real-time communication between browser and NFC reader
-* Blackjack gameplay with betting support
-* Load funds from NFC cards into a game session
-* Cash out winnings directly back to the NFC card
-
-```
 ## Setup
 
-INSTALLING THE REQUIRED FILES:
-Download index.html and nfc_server.py into your local system
+1. In MongoDB Atlas, create a database user with read/write access to your demo database and allow the demo machine's IP. Copy the Python driver connection string and substitute the database user's credentials.
+2. Create the `hack_uta` database and the `players` collection. Insert this document in Atlas Data Explorer:
 
+   ```json
+   { "_id": "P001", "name": "Ansil", "balance": 250, "revision": 0 }
+   ```
 
-SETTING UP THE HARDWARE:
-connet any compatible nfc reader to your system and preload your nfc tags using any software from apple store
-Eg: For this project, ACR122U -A9 was used as reader, NTAG215 was used as nfc tags, and 'NFC TOOLS' was used to preload the chips.
-Load the chip in the given format: BALANCE:250
+   Use a unique string ID for each player. `balance` is a whole number of demo credits. Start `revision` at zero. To use a different database, set `MONGODB_DATABASE`.
 
-GATHERING THE LIBRARIES REQUIRED:
-In the terminal, run:
-1. pip install pyscard websockets
-2. python3 nfc_server.py
-Then, Open `index.html` in your browser.
-```
+3. Connect the ACR122U. In NFC Tools, write a **Text** record to the NTAG215:
 
+   ```json
+   { "id": "P001", "name": "Ansil" }
+   ```
 
+   Keep the record compact. The reader reads the first 144 bytes of user memory. Replace any old `BALANCE:250` text before tapping.
 
+4. In the VS Code terminal, install the dependencies and start the server:
 
+   ```bash
+   python3 -m pip install pyscard websockets "pymongo[srv]>=4.2,<5"
+   read -rs 'MONGODB_URI?MongoDB URI: '
+   export MONGODB_URI
+   python3 nfc_server.py
+   ```
 
+   The `read` command above is for macOS zsh. Paste the URI at the prompt and press Return. Keep credentials out of Git. Open `index.html` in your browser on the same computer.
 
+## Verify the demo
 
+Tap P001 and check that the HUD shows Ansil and $250. Choose a bet and click Deal. Check that MongoDB shows the deducted balance. Finish the round and check the payout, then end the session and retap to verify the balance persisted. A legacy chip or an unknown player ID should show an error.
 
+## Demo scope
 
-
-
+Use one browser per physical table and demo credits only. Blackjack outcomes are calculated in the browser and chips can be copied. A reload during a hand ends the browser's round state. Confirmed debits remain in MongoDB. Out-of-band balance edits should advance `revision` so an older browser snapshot cannot apply an update.
