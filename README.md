@@ -1,4 +1,4 @@
-# NFC Blackjack
+# Olympus 21 — NFC Blackjack
 
 The chip stores an ID and display name as an NDEF **Text** record. MongoDB stores the player's demo balance. A tap loads that balance into the browser. Deal, Double, and Split debit MongoDB, and round settlement credits the payout. Ending the session returns the browser to the tap screen.
 
@@ -30,7 +30,7 @@ The chip stores an ID and display name as an NDEF **Text** record. MongoDB store
    python3 nfc_server.py
    ```
 
-   The `read` command above is for macOS zsh. Paste the URI at the prompt and press Return. Keep credentials out of Git. Open `index.html` in your browser on the same computer.
+   The `read` command above is for macOS zsh. Paste the URI at the prompt and press Return. Keep credentials out of Git. Open `index.html` in your browser on the same computer. Tapping a chip starts the storm-wave animation, then the table appears.
 
 ## Verify the demo
 
@@ -39,3 +39,13 @@ Tap P001 and check that the HUD shows Ansil and $250. Choose a bet and click Dea
 ## Demo scope
 
 Use one browser per physical table and demo credits only. Blackjack outcomes are calculated in the browser and chips can be copied. A reload during a hand ends the browser's round state. Confirmed debits remain in MongoDB. Out-of-band balance edits should advance `revision` so an older browser snapshot cannot apply an update.
+
+## Files
+
+- `index.html`: landing screen, blackjack table, and the WebSocket/MongoDB game logic
+- `style.css`: Olympus 21 theme (landing page, night theme, footer)
+- `script.js`: storm and wave animation. A tap triggers the wave and the table appears underneath it
+- `nfc_server.py`: NFC reader and MongoDB WebSocket server
+- `admin_panel.py`: admin tool for player balances
+
+Google Fonts load from the web, so the exact typography needs internet access.
