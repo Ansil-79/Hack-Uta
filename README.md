@@ -1,53 +1,20 @@
-# Overview
+# Olympus 21 — VS Code project
 
-An NFC-integrated blackjack platform that allows players to load funds from NFC cards, play blackjack through a browser interface, and cash out updated balances back to the card.
+This project is your original HackUTA 2026 Olympus 21 frontend, reorganized without changing its design or gameplay.
 
-The system uses a Python backend to communicate with an NFC reader and manage card data, while a JavaScript frontend provides the game interface. Browser and server communication is handled through WebSockets, enabling real-time balance updates and card interactions.
+## Files
+- `index.html` — markup and references to the other files
+- `style.css` — all CSS, including responsive layout and cards
+- `script.js` — storm animation, interactions, and Blackjack logic
 
-## Technologies
+## How to run
+1. Download and unzip `olympus21-vscode.zip`.
+2. In VS Code, choose **File > Open Folder** and select the `olympus21-vscode` folder.
+3. Open `index.html`.
+4. For a quick preview, open `index.html` in Chrome or use the VS Code **Live Server** extension and choose **Open with Live Server**.
+5. Click **Explore without a card** to start Blackjack without NFC.
 
-* Python 3.14.3
-* Pyscard
-* JavaScript
-* HTML/CSS
-* WebSockets
-* NFC reader (ACR122U -A9)
-* NFC chips (NTAG215)
+## Important NFC note
+This is a frontend-only package. The built-in Web NFC code requires a supported device/browser, HTTPS, and user permission. It is **not yet wired to `nfc_server.py`** or a USB NFC reader/WebSocket server. On a desktop browser without Web NFC, the NFC button starts demo mode. The `Explore without a card` link also starts demo mode.
 
-## Features
-
-* NFC card authentication and balance management
-* Real-time communication between browser and NFC reader
-* Blackjack gameplay with betting support
-* Load funds from NFC cards into a game session
-* Cash out winnings directly back to the NFC card
-
-```
-## Setup
-
-INSTALLING THE REQUIRED FILES:
-Download index.html and nfc_server.py into your local system
-
-
-SETTING UP THE HARDWARE:
-connet any compatible nfc reader to your system and preload your nfc tags using any software from apple store
-Eg: For this project, ACR122U -A9 was used as reader, NTAG215 was used as nfc tags, and 'NFC TOOLS' was used to preload the chips.
-Load the chip in the given format: BALANCE:250
-
-GATHERING THE LIBRARIES REQUIRED:
-In the terminal, run:
-1. pip install pyscard websockets
-2. python3 nfc_server.py
-Then, Open `index.html` in your browser.
-```
-
-
-
-
-
-
-
-
-
-
-
+Google Fonts are loaded from the web, so your browser will need internet access for the exact original typography.
