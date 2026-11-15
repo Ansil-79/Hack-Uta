@@ -54,9 +54,22 @@
         pointer-events: none;
       }
       body.playing header,
-      body.playing footer,
-      body.playing .mountains {
+      body.playing footer {
         display: none;
+      }
+      /* while playing, the sea and boat stay visible behind the table */
+      body.playing #cv {
+        z-index: 1;
+      }
+      #game-screen {
+        position: relative;
+        z-index: 2;
+      }
+      .action-bar {
+        z-index: 3;
+      }
+      #toast {
+        z-index: 60;
       }
 
       .nfc-logo {

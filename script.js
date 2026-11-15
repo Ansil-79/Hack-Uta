@@ -4,7 +4,7 @@
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 let W, H, DPR, S, R, SEA;
-let t, tw, tStart, last, flash, bolt, nextBolt, boat, splashes, foam, dark, swapped;
+let t, tw, tStart, last, flash, bolt, nextBolt, boat, splashes, foam, dark, swapped, swapT;
 const cr1 = [0, 0, 0, 0], cr2 = [0, 0, 0, 0];
 
 const OFF = [0, 0.035, 0.07, 0.105];              // layer offsets, fraction of H
@@ -23,13 +23,20 @@ function fit() {
 }
 window.addEventListener('resize', fit);
 
+function drain() {                                   // 0 while the page is flooded, 1 once the sea has settled
+  if (swapT === null) return 0;
+  const k = Math.max(0, Math.min(1, (t - swapT - 1.2) / 3));
+  return k * k * (3 - 2 * k);
+}
 function h(i, x) {
   let v = 0;
+  const d = drain();
   const dx = x - cr1[i], wd = (dx > 0 ? 0.09 : 0.2) * W;                     // wave 1: big swell
   v += 0.17 * H * K1[i] * Math.exp(-Math.pow(dx / wd, 2));
   const sf = 1 / (1 + Math.exp((x - cr2[i]) / (0.045 * W)));                  // wave 2: floods the page
   const sb = 1 / (1 + Math.exp(-(x - (cr2[i] - 1.8 * W)) / (0.25 * W)));
-  v += 1.1 * H * sf * sb;
+  v += 1.1 * H * sf * sb * (1 - d);                                           // the flood drains away
+  v += 0.03 * H * K1[i] * d * (0.5 + 0.5 * Math.sin(x * 0.005 - t * 0.9 + i * 0.6));  // gentle rolling swell while playing
   return v;
 }
 function rip(i, x) {
@@ -71,7 +78,7 @@ function strokePath(p) {
 function resetScene() {
   t = 0; tw = -10; tStart = null; last = null; flash = 0; bolt = null; nextBolt = 2;
   splashes = []; foam = [];
-  dark = false; swapped = false;
+  dark = false; swapped = false; swapT = null;
   boat = { x: W * 0.84, y: SEA + 0.05 * H, a: 0 };
 }
 
@@ -100,11 +107,11 @@ function step(dt) {
 
   // the big wave has covered the whole page: the game begins underneath it
   if (tStart !== null && !swapped && topSurf(0) < -4 && topSurf(W * 0.5) < -4 && topSurf(W) < -4) {
-    swapped = true; dark = true; enterGame();
+    swapped = true; swapT = t; dark = true; enterGame();
   }
 
   const b = boat;
-  b.x = W * 0.84 + Math.sin(t * 0.9) * 4;
+  b.x = W * (0.84 + 0.05 * drain()) + Math.sin(t * 0.9) * 4;
   const ref = x => seaLevel(x);
   const y = Math.max(ref(b.x) + 0.05 * H, H * 0.36);
   let target = Math.atan((ref(b.x + 24 * S) - ref(b.x - 24 * S)) / (48 * S));
@@ -258,8 +265,6 @@ function draw() {
 }
 
 function loop(ts) {
-  if (cv.style.visibility === 'hidden') { last = ts; requestAnimationFrame(loop); return; }
-  if (swapped && tw > 8) cv.style.visibility = 'hidden';   // wave has passed: leave the table clear
   if (last === null) last = ts;
   const dt = Math.min(0.033, (ts - last) / 1000);
   last = ts;
@@ -283,7 +288,6 @@ function enterGame() {                      // wave now covers the page
 }
 function backToStart() {
   document.body.classList.remove('night', 'playing');
-  cv.style.visibility = '';
   resetScene();
 }
 fit();
