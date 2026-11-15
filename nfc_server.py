@@ -1,14 +1,27 @@
 """Read player identity from NFC and store blackjack demo balances in MongoDB."""
 
 import asyncio
+import glob
 import json
 import os
 import re
+import threading
 
 import websockets
 from pymongo import MongoClient, ReturnDocument
 from pymongo.errors import PyMongoError
 from smartcard.CardMonitoring import CardMonitor, CardObserver
+
+try:
+    import serial
+except ImportError:
+    serial = None
+
+# What the browser may tell the ESP32 (LEDs, buzzer, button mode).
+HW_COMMANDS = {
+    "MODE:WAIT_NFC", "MODE:BETTING", "MODE:PLAYING", "BET_REJECT",
+    "RESULT:WIN", "RESULT:BLACKJACK", "RESULT:BUST", "RESULT:LOSE", "RESULT:PUSH",
+}
 
 
 def read_pages(connection):
@@ -100,6 +113,46 @@ def adjust_balance(players, player_id, change, revision, operation):
     return document, bool(document and document.get("last_operation") == operation)
 
 
+def open_controller():
+    if serial is None:
+        print("pyserial is not installed, so the ESP32 buttons are off: python3 -m pip install pyserial")
+        return None
+    port = os.environ.get("ESP32_PORT") or next(iter(sorted(
+        glob.glob("/dev/cu.usbserial*") + glob.glob("/dev/cu.wchusbserial*")
+        + glob.glob("/dev/cu.SLAB_USBtoUART*") + glob.glob("/dev/cu.usbmodem*"))), None)
+    if not port:
+        print("No ESP32 found, so the buttons are off. Plug it in or set ESP32_PORT.")
+        return None
+    try:
+        controller = serial.Serial(port, 115200, timeout=1)
+    except OSError as error:
+        print(f"Could not open {port} ({error}). Close the Arduino Serial Monitor and try again.")
+        return None
+    print(f"ESP32 controller on {port}")
+    return controller
+
+
+def controller_event(line):
+    name, _, value = line.partition(":")
+    if name == "BET_ADD" and value.isdigit():
+        return {"type": "button", "action": "bet_add", "amount": int(value)}
+    if name in ("BET_CONFIRM", "BET_CLEAR", "HIT", "STAND", "DOUBLE", "SPLIT"):
+        return {"type": "button", "action": name.lower()}
+    return None
+
+
+def read_controller(controller, loop, broadcast):
+    while True:
+        try:
+            line = controller.readline().decode(errors="ignore").strip()
+        except OSError:
+            print("ESP32 disconnected. Restart the server to use the buttons again.")
+            return
+        event = controller_event(line)
+        if event:
+            loop.call_soon_threadsafe(broadcast, event)
+
+
 async def main():
     uri = os.environ.get("MONGODB_URI")
     if not uri:
@@ -118,6 +171,13 @@ async def serve_table(players):
     # Each browser can update only the player it explicitly selected after a tap.
     clients = {}
     last_tapped = None
+
+    def broadcast(event):
+        websockets.broadcast(list(clients), json.dumps(event))
+
+    controller = open_controller()
+    if controller:
+        threading.Thread(target=read_controller, args=(controller, loop, broadcast), daemon=True).start()
 
     async def handler(websocket):
         clients[websocket] = None
@@ -151,6 +211,16 @@ async def serve_table(players):
                             result.update(balance=document["balance"], revision=document["revision"])
                         if not applied:
                             result["message"] = "Balance changed or funds are insufficient. Check the displayed balance."
+                    elif data.get("type") == "hardware":
+                        command = data.get("command")
+                        if command not in HW_COMMANDS:
+                            raise ValueError("Unknown hardware command.")
+                        if controller:
+                            try:
+                                controller.write(f"{command}\n".encode())
+                            except OSError:
+                                pass
+                        result = {"success": True}
                     else:
                         raise ValueError("Unknown request.")
                 except (ValueError, TypeError) as error:
@@ -189,6 +259,8 @@ async def serve_table(players):
                 websockets.broadcast(list(clients), json.dumps(event))
     finally:
         monitor.deleteObserver(observer)
+        if controller:
+            controller.close()
 
 
 if __name__ == "__main__":

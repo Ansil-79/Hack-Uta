@@ -547,19 +547,17 @@
         border-color: var(--gold);
       }
       .chip[data-v="5"] {
-        background: #2196f3;
-      }
-      .chip[data-v="10"] {
-        background: #9c27b0;
-      }
-      .chip[data-v="25"] {
         background: #4caf50;
       }
-      .chip[data-v="50"] {
+      .chip[data-v="10"] {
         background: #f44336;
       }
+      .chip[data-v="50"] {
+        background: #2196f3;
+      }
       .chip[data-v="100"] {
-        background: #ff9800;
+        background: #ffc107;
+        color: #1b1b1b;
       }
 
       .bet-input {
@@ -637,19 +635,14 @@
         background: rgba(255, 107, 107, 0.08);
       }
       #btn-double {
-        border-color: var(--gold);
-        color: var(--gold);
-        background: rgba(201, 168, 76, 0.08);
-      }
-      #btn-split {
         border-color: var(--nfc-blue);
         color: var(--nfc-blue);
         background: rgba(74, 168, 255, 0.08);
       }
-      #btn-surrender {
-        border-color: #aaa;
-        color: #aaa;
-        background: rgba(170, 170, 170, 0.08);
+      #btn-split {
+        border-color: #ffd54f;
+        color: #ffd54f;
+        background: rgba(255, 213, 79, 0.08);
       }
 
       .act-btn:not(:disabled):hover {
@@ -821,7 +814,6 @@
         <div class="bet-bar" id="bet-bar">
           <div class="chip" data-v="5">$5</div>
           <div class="chip" data-v="10">$10</div>
-          <div class="chip" data-v="25">$25</div>
           <div class="chip" data-v="50">$50</div>
           <div class="chip" data-v="100">$100</div>
           <input
@@ -844,7 +836,6 @@
 
     <!-- Action bar -->
     <div class="action-bar" id="action-bar">
-      <button class="act-btn" id="btn-surrender">Surrender</button>
       <button class="act-btn" id="btn-hit">Hit</button>
       <button class="act-btn" id="btn-stand">Stand</button>
       <button class="act-btn" id="btn-double">Double</button>
@@ -1100,6 +1091,7 @@
       function connect() {
         socket = new WebSocket("ws://localhost:8765");
         socket.onopen = () => {
+          if (!player) hw("MODE:WAIT_NFC");
           if (player) {
             socket.send(
               JSON.stringify({
@@ -1116,6 +1108,10 @@
         };
         socket.onmessage = (event) => {
           const data = JSON.parse(event.data);
+          if (data.type === "button") {
+            onButton(data);
+            return;
+          }
           if (data.type === "error") {
             if (gamePhase === "idle") nfcStatus.textContent = data.message;
             else showToast(data.message);
@@ -1184,6 +1180,28 @@
           if (!data.success) showToast(data.message);
           complete(data.success);
         };
+      }
+
+      // Tell the ESP32 which mode we are in, and what the round result was.
+      function hw(command) {
+        if (socket.readyState === WebSocket.OPEN)
+          socket.send(JSON.stringify({ type: "hardware", command }));
+      }
+
+      // A physical button press: same effect as clicking the matching control.
+      function onButton({ action, amount }) {
+        if (action === "bet_add") {
+          // TEMP: old sketch sends 10/20 for the green/red buttons; remove after uploading the new sketch.
+          const v = { 10: 5, 20: 10 }[Number(amount)] ?? Number(amount);
+          document.querySelector(`.chip[data-v="${v}"]`)?.click();
+        }
+        else if (action === "bet_clear") clearBtn.click();
+        else if (action === "bet_confirm") {
+          if (!deal()) hw("BET_REJECT");
+        } else {
+          const button = document.getElementById("btn-" + action);
+          if (button && button.style.display !== "none") button.click();
+        }
       }
 
       function applyBalance(data) {
@@ -1263,20 +1281,23 @@
         refreshBet();
       });
 
-      dealBtn.addEventListener("click", () => {
-        if (pending || gamePhase !== "betting" || selectedBet <= 0) return;
+      function deal() {
+        if (pending || gamePhase !== "betting" || selectedBet <= 0) return false;
         changeBalance(-selectedBet, (success) => {
-          if (!success) return;
+          if (!success) return hw("BET_REJECT");
           game.deal();
           game.bet(selectedBet);
           betBar.style.display = "none";
           actionBar.classList.add("show");
           renderInitial();
           gamePhase = "playing";
+          hw("MODE:PLAYING");
           updateHUD();
           computeControls();
         });
-      });
+        return true;
+      }
+      dealBtn.addEventListener("click", deal);
 
       // ════════════════════════════════════════════════════════════
       //  Game actions
@@ -1322,14 +1343,6 @@
           game.split();
           animateSplit();
         });
-      });
-
-      document.getElementById("btn-surrender").addEventListener("click", () => {
-        if (pending || gamePhase !== "playing") return;
-        const hand = game.hands[game.idx];
-        if (hand.cards.length !== 2 || hand.split) return;
-        game.surrender();
-        advanceHand(hand);
       });
 
       function renderHands(counts = [], slow = false) {
@@ -1432,6 +1445,15 @@
             return;
           }
           const net = payout - wager;
+          hw(
+            net > 0
+              ? "RESULT:WIN"
+              : net === 0
+                ? "RESULT:PUSH"
+                : game.hands.every((hand) => hand.busted())
+                  ? "RESULT:BUST"
+                  : "RESULT:LOSE",
+          );
           const button = document.getElementById("cashout-button");
           button.textContent = "END SESSION";
           button.onclick = initiateCashout;
@@ -1463,6 +1485,7 @@
         }
         resetBetUI();
         gamePhase = "idle";
+        hw("MODE:WAIT_NFC");
         player = null;
         game.chips = 0;
         nfcScreen.style.display = "";
@@ -1549,21 +1572,16 @@
           h.cards.length === 2 &&
           h.cards[0]?.getValue() === h.cards[1]?.getValue() &&
           game.chips >= h.bet;
-        const canSurr = h.cards.length === 2 && !h.split;
         [
           "btn-hit",
           "btn-stand",
           "btn-double",
           "btn-split",
-          "btn-surrender",
         ].forEach((id) => (document.getElementById(id).disabled = false));
         document.getElementById("btn-double").style.display = canDouble
           ? ""
           : "none";
         document.getElementById("btn-split").style.display = canSplit
-          ? ""
-          : "none";
-        document.getElementById("btn-surrender").style.display = canSurr
           ? ""
           : "none";
       }
@@ -1574,12 +1592,12 @@
           "btn-stand",
           "btn-double",
           "btn-split",
-          "btn-surrender",
         ].forEach((id) => (document.getElementById(id).disabled = true));
       }
 
       function resetBetUI() {
         gamePhase = "betting";
+        hw("MODE:BETTING");
         for (const key of Object.keys(chipCounts)) delete chipCounts[key];
         selectedBet = 0;
         betDisplay.value = 0;

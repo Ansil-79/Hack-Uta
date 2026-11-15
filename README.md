@@ -49,3 +49,22 @@ Use one browser per physical table and demo credits only. Blackjack outcomes are
 - `admin_panel.py`: admin tool for player balances
 
 Google Fonts load from the web, so the exact typography needs internet access.
+
+## ESP32 buttons
+
+`blackjack_controller.ino` runs on the ESP32. It talks to `nfc_server.py` over USB serial (115200 baud), and the server passes presses to the browser.
+
+| Button | Betting | Playing |
+|---|---|---|
+| Green | +$5 | Hit |
+| Red | +$10 | Stand |
+| Blue | +$50 | Double |
+| Yellow | +$100 | Split |
+| Enter | tap = deal, hold 1s = clear bet | not used |
+
+- Install the serial library once: `python3 -m pip install pyserial`
+- Close the Arduino Serial Monitor before starting the server, because only one program can use the port.
+- The server finds the ESP32 automatically. To pick a port yourself: `export ESP32_PORT=/dev/cu.usbserial-XXXX`
+- Without an ESP32 or `pyserial`, the server prints a note and the on-screen controls work as before.
+- LEDs and buzzer follow the round: blinking green while playing, solid green and a fanfare on a win, solid red and two beeps on any loss.
+
